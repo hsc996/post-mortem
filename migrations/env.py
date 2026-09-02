@@ -11,6 +11,7 @@ from src.models.base import Base
 import src.models.audit
 import src.models.incident
 import src.models.mitigation
+import src.models.revoked_token
 import src.models.user
 
 
