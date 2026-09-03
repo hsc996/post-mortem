@@ -1,5 +1,5 @@
 import uuid
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, ConfigDict
 from src.models.user import UserRole
 
 
@@ -29,8 +29,7 @@ class UserResponse(BaseModel):
     role: UserRole
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Token(BaseModel):

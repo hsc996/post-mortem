@@ -22,7 +22,10 @@ def get_password_hash(password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    password_bytes = plain_password.encode("utf-8")
+    if len(password_bytes) > MAX_PASSWORD_BYTES:
+        return False
+    return bcrypt.checkpw(password_bytes, hashed_password.encode("utf-8"))
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
@@ -55,10 +58,13 @@ async def revoke_token(token: str, db: AsyncSession) -> None:
         token, settings.SECRET_KEY, algorithms=[ALGORITHM], options={"verify_exp": False}
     )
     jti = payload.get("jti")
-    if jti is None:
+    exp_claim = payload.get("exp")
+    if not jti:
         raise jwt.InvalidTokenError("Token missing jti claim")
+    if not exp_claim:
+        raise jwt.InvalidTokenError("Token missing exp claim")
 
-    expires_at = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    expires_at = datetime.fromtimestamp(exp_claim, tz=timezone.utc)
     stmt = (
         pg_insert(RevokedToken)
         .values(jti=jti, expires_at=expires_at)

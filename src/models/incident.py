@@ -1,10 +1,10 @@
 import enum
 import uuid
 from datetime import datetime
-from sqlalchemy import Enum as SQLEnum, String, DateTime, Integer, ForeignKey, Text
+from sqlalchemy import Enum as SQLEnum, String, Integer, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from src.models.base import Base, TimestampMixin
+from src.models.base import Base, TimestampMixin, TZDateTime
 
 class IncidentSeverity(str, enum.Enum):
     LOW = "low"
@@ -33,7 +33,7 @@ class Incident(Base, TimestampMixin):
         SQLEnum(IncidentStatus), default=IncidentStatus.OPEN, nullable=False
     )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
 
     # FK mapping
     reporter_id: Mapped[uuid.UUID] = mapped_column(

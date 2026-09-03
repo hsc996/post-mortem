@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import String, ForeignKey
+from sqlalchemy import String, ForeignKey, JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.base import Base, TimestampMixin
@@ -14,7 +14,7 @@ class AuditLog(Base, TimestampMixin):
     actor_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
-    changes: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    changes: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
 
 
