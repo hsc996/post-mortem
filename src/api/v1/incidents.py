@@ -10,11 +10,11 @@ from src.core.database import get_db
 from src.models.incident import Incident, IncidentSeverity, IncidentStatus
 from src.models.user import User, UserRole
 from src.schemas.incident import IncidentCreate, IncidentUpdate, IncidentResponse
+from src.services.audit import record_audit_log
 from src.services.incidents import (
     apply_optimistic_update,
     ensure_assignee_exists,
     get_incident_or_404,
-    record_audit_log,
 )
 
 router = APIRouter(prefix="/incidents", tags=["Incidents"])
@@ -47,6 +47,7 @@ async def create_incident(
     await record_audit_log(
         db=db,
         actor_id=current_user.id,
+        entity_type="incident",
         action="INCIDENT_CREATED",
         entity_id=incident.id,
         changes=incident_in.model_dump(mode="json"),
@@ -127,6 +128,7 @@ async def update_incident(
     await record_audit_log(
         db=db,
         actor_id=current_user.id,
+        entity_type="incident",
         action="INCIDENT_UPDATED",
         entity_id=incident_id,
         changes=incident_in.model_dump(mode="json", exclude_unset=True, exclude={"version"}),
@@ -166,6 +168,7 @@ async def resolve_incident(
     await record_audit_log(
         db=db,
         actor_id=current_user.id,
+        entity_type="incident",
         action="INCIDENT_RESOLVED",
         entity_id=incident.id,
         changes={

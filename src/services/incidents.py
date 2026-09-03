@@ -4,26 +4,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.audit import AuditLog
 from src.models.incident import Incident
 from src.models.user import User
-
-
-async def record_audit_log(
-    db: AsyncSession,
-    actor_id: uuid.UUID,
-    action: str,
-    entity_id: uuid.UUID,
-    changes: dict,
-) -> None:
-    log_entry = AuditLog(
-        actor_id=actor_id,
-        entity_type="incident",
-        entity_id=entity_id,
-        action=action,
-        changes=changes,
-    )
-    db.add(log_entry)
 
 
 async def ensure_assignee_exists(db: AsyncSession, assignee_id: uuid.UUID | None) -> None:

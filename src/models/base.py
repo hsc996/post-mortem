@@ -7,8 +7,8 @@ class Base(DeclarativeBase):
     pass
 
 class TZDateTime(TypeDecorator):
-    """DateTime(timezone=True) that guarantees a UTC-aware value on read, even
-    on backends that silently drop tzinfo on round-trip. Postgres already preserves tzinfo, so this is a no-op there."""
+    """DateTime(timezone=True) that guarantees a UTC-aware value on read,
+        even on backends that silently drop tzinfo on round-trip."""
 
     impl = DateTime(timezone=True)
     cache_ok = True

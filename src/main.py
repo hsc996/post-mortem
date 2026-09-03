@@ -1,11 +1,13 @@
 from fastapi import FastAPI
 from src.api.v1.auth import router as auth_router
 from src.api.v1.incidents import router as incident_router
+from src.api.v1.mitigations import router as mitigations_router
 
 app = FastAPI(title="PostMortem API", version="0.1.0")
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(incident_router, prefix="/api/v1")
+app.include_router(mitigations_router, prefix="/api/v1")
 
 @app.get("/healthz", status_code=200)
 async def health_check():
