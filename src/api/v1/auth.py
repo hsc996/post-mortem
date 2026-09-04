@@ -1,7 +1,7 @@
 import uuid
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -108,6 +108,22 @@ async def logout(
 @router.get("/me", response_model=UserResponse)
 async def read_current_user(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.get("/users", response_model=list[UserResponse])
+async def list_users(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+):
+    """
+    Lists user accounts. Any authenticated user can call this — the incident
+    feed and audit trail need it to resolve reporter/assignee/actor names,
+    and it doubles as the directory the admin role-management screen lists.
+    """
+    result = await db.execute(select(User).order_by(User.first_name).offset(skip).limit(limit))
+    return result.scalars().all()
 
 
 @router.patch("/users/{user_id}/role", response_model=UserResponse)
