@@ -93,3 +93,10 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_users_email'), table_name='users')
     op.drop_table('users')
     # ### end Alembic commands ###
+
+    # Postgres ENUM types aren't dropped automatically when the tables/columns
+    # using them are dropped, and must be removed explicitly or a subsequent
+    # upgrade() will fail with "type already exists".
+    postgresql.ENUM(name='incidentstatus').drop(op.get_bind(), checkfirst=True)
+    postgresql.ENUM(name='incidentseverity').drop(op.get_bind(), checkfirst=True)
+    postgresql.ENUM(name='userrole').drop(op.get_bind(), checkfirst=True)
