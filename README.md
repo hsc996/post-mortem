@@ -1,6 +1,6 @@
 # PostMortem
 
-An incident and shift handover monitoring/reporting backend for high-consequence environments, providing incident tracking, temporary mitigation management, and shift handovers, backed by full audit logging and role-based access control.
+An incident and shift handover monitoring/reporting app for high-consequence environments, providing incident tracking, temporary mitigation management, and shift handovers, backed by full audit logging and role-based access control.
 
 ## Features
 

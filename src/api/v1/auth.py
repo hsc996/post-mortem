@@ -18,7 +18,7 @@ from src.core.security import (
     verify_password,
 )
 from src.models.user import User, UserRole
-from src.schemas.auth import RoleUpdate, Token, UserCreate, UserResponse
+from src.schemas.auth import RoleUpdate, Token, UserCreate, UserResponse, UserSummary
 from src.services.audit import record_audit_log
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -110,7 +110,7 @@ async def read_current_user(current_user: User = Depends(get_current_user)):
     return current_user
 
 
-@router.get("/users", response_model=list[UserResponse])
+@router.get("/users", response_model=list[UserResponse] | list[UserSummary])
 async def list_users(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -119,11 +119,15 @@ async def list_users(
 ):
     """
     Lists user accounts. Any authenticated user can call this — the incident
-    feed and audit trail need it to resolve reporter/assignee/actor names,
-    and it doubles as the directory the admin role-management screen lists.
+    feed and audit trail need it to resolve reporter/assignee/actor names —
+    but only admins (who also drive the role-management screen) get email
+    and role back; everyone else gets a name-only directory entry.
     """
     result = await db.execute(select(User).order_by(User.first_name).offset(skip).limit(limit))
-    return result.scalars().all()
+    users = result.scalars().all()
+    if current_user.role == UserRole.ADMIN:
+        return users
+    return [UserSummary.model_validate(user) for user in users]
 
 
 @router.patch("/users/{user_id}/role", response_model=UserResponse)

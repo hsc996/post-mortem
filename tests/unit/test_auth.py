@@ -232,6 +232,57 @@ async def test_logout_invalid_token_returns_401(client):
 
 
 @pytest.mark.asyncio
+async def test_list_users_as_admin_returns_full_fields(client, make_user, as_user):
+    admin = await make_user(role=UserRole.ADMIN)
+    other = await make_user(role=UserRole.RESPONDER, first_name="Jing", last_name="Meng")
+    as_user(admin)
+
+    response = await client.get("/api/v1/auth/users")
+
+    assert response.status_code == 200
+    by_id = {row["id"]: row for row in response.json()}
+    assert set(by_id[str(other.id)].keys()) == {
+        "id", "email", "first_name", "last_name", "role", "is_active",
+    }
+    assert by_id[str(other.id)]["email"] == other.email
+    assert by_id[str(other.id)]["role"] == "responder"
+
+
+@pytest.mark.asyncio
+async def test_list_users_as_non_admin_omits_email_and_role(client, make_user, as_user):
+    viewer = await make_user(role=UserRole.VIEWER)
+    other = await make_user(role=UserRole.ADMIN, first_name="Rafael", last_name="Okafor")
+    as_user(viewer)
+
+    response = await client.get("/api/v1/auth/users")
+
+    assert response.status_code == 200
+    by_id = {row["id"]: row for row in response.json()}
+    assert set(by_id[str(other.id)].keys()) == {"id", "first_name", "last_name"}
+    assert by_id[str(other.id)]["first_name"] == "Rafael"
+
+
+@pytest.mark.asyncio
+async def test_list_users_without_token_returns_401(client):
+    response = await client.get("/api/v1/auth/users")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_list_users_respects_limit(client, make_user, as_user):
+    admin = await make_user(role=UserRole.ADMIN)
+    for _ in range(3):
+        await make_user(role=UserRole.VIEWER)
+    as_user(admin)
+
+    response = await client.get("/api/v1/auth/users", params={"limit": 2})
+
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+
+
+@pytest.mark.asyncio
 async def test_update_user_role_as_admin_succeeds(client, make_user, as_user):
     admin = await make_user(role=UserRole.ADMIN)
     target = await make_user(role=UserRole.RESPONDER)
