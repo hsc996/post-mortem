@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +66,13 @@ async def revoke_token(token: str, db: AsyncSession) -> None:
         raise jwt.InvalidTokenError("Token missing exp claim")
 
     expires_at = datetime.fromtimestamp(exp_claim, tz=timezone.utc)
+
+    # Opportunistically purge tokens that have already expired — an expired jti
+    # is worthless to keep denylisted since decode_access_token would reject an
+    # expired token on signature/exp verification before ever checking this
+    # table. This keeps the table bounded without needing a separate scheduled job.
+    await db.execute(delete(RevokedToken).where(RevokedToken.expires_at < datetime.now(timezone.utc)))
+
     stmt = (
         pg_insert(RevokedToken)
         .values(jti=jti, expires_at=expires_at)

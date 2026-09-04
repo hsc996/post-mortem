@@ -1,8 +1,11 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from src.core.security import get_password_hash
+from src.models.revoked_token import RevokedToken
 from src.models.user import User, UserRole
 
 REGISTER_URL = "/api/v1/auth/register"
@@ -192,6 +195,31 @@ async def test_logout_revokes_token(client, db_session):
 
     me_response = await client.get(ME_URL, headers=headers)
     assert me_response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_logout_purges_expired_revoked_tokens(client, db_session):
+    stale = RevokedToken(
+        jti=str(uuid.uuid4()),
+        expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+    db_session.add(stale)
+    await db_session.commit()
+
+    user = await create_user_with_password(db_session)
+    login_response = await client.post(
+        LOGIN_URL, data={"username": user.email, "password": PASSWORD}
+    )
+    token = login_response.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    logout_response = await client.post(LOGOUT_URL, headers=headers)
+    assert logout_response.status_code == 204
+
+    result = await db_session.execute(
+        select(RevokedToken.jti).where(RevokedToken.jti == stale.jti)
+    )
+    assert result.scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio
