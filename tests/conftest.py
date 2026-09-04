@@ -13,9 +13,19 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0000")
 
 from src.api.deps import get_current_user
 from src.core.database import get_db
+from src.core.rate_limit import limiter
 from src.main import app
 from src.models.base import Base
 from src.models.user import User, UserRole
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Clears slowapi's in-memory rate-limit counters before every test so
+    tests that repeatedly hit rate-limited endpoints (login/register) don't
+    bleed into each other."""
+    limiter.reset()
+    yield
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 

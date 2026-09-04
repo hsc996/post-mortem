@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,7 @@ router = APIRouter(prefix="/incidents/{incident_id}/mitigation", tags=["Mitigati
 
 @router.post("/", response_model=MitigationResponse, status_code=status.HTTP_201_CREATED)
 async def create_mitigation(
+    request: Request,
     incident_id: uuid.UUID,
     mitigation_in: MitigationCreate,
     db: AsyncSession = Depends(get_db),
@@ -67,7 +68,9 @@ async def create_mitigation(
         entity_type="mitigation",
         action="MITIGATION_CREATED",
         entity_id=mitigation.id,
+        incident_id=incident_id,
         changes=mitigation_in.model_dump(mode="json"),
+        ip_address=request.client.host if request.client else None,
     )
 
     await db.commit()
@@ -86,6 +89,7 @@ async def get_mitigation(
 
 @router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
 async def clear_mitigation(
+    request: Request,
     incident_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(RequireRole([UserRole.ADMIN, UserRole.RESPONDER])),
@@ -107,7 +111,9 @@ async def clear_mitigation(
         entity_type="mitigation",
         action="MITIGATION_DELETED",
         entity_id=mitigation_id,
+        incident_id=incident_id,
         changes={"incident_id": str(incident_id)},
+        ip_address=request.client.host if request.client else None,
     )
 
     await db.commit()

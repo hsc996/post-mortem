@@ -1,54 +1,80 @@
+import uuid
+
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps import get_current_user, oauth2_scheme
+from src.api.deps import RequireRole, get_current_user, oauth2_scheme
 from src.core.database import get_db
+from src.core.rate_limit import limiter
 from src.core.security import (
+    DUMMY_PASSWORD_HASH,
     create_access_token,
     get_password_hash,
     revoke_token,
     verify_password,
 )
-from src.models.user import User
-from src.schemas.auth import Token, UserCreate, UserResponse
+from src.models.user import User, UserRole
+from src.schemas.auth import RoleUpdate, Token, UserCreate, UserResponse
+from src.services.audit import record_audit_log
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register_user(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def register_user(request: Request, user_in: UserCreate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == user_in.email))
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this email already exists.",
         )
+
+    # Self-registration always creates a read-only VIEWER account; an existing
+    # admin must promote the user via PATCH /auth/users/{user_id}/role.
     user = User(
         email=user_in.email,
         hashed_password=get_password_hash(user_in.password),
         first_name=user_in.first_name,
         last_name=user_in.last_name,
-        role=user_in.role,
+        role=UserRole.VIEWER,
         phone=user_in.phone_number,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two concurrent registrations for the same email raced past the check above.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User with this email already exists.",
+        )
     await db.refresh(user)
     return user
 
 
 @router.post("/login", response_model=Token)
+@limiter.limit("5/minute")
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.email == form_data.username))
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    # Always run a bcrypt comparison, even when the user doesn't exist, so that
+    # response timing doesn't leak whether an email is registered.
+    password_valid = verify_password(
+        form_data.password, user.hashed_password if user else DUMMY_PASSWORD_HASH
+    )
+
+    if not user or not password_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -82,3 +108,38 @@ async def logout(
 @router.get("/me", response_model=UserResponse)
 async def read_current_user(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.patch("/users/{user_id}/role", response_model=UserResponse)
+async def update_user_role(
+    request: Request,
+    user_id: uuid.UUID,
+    role_in: RoleUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(RequireRole([UserRole.ADMIN])),
+):
+    """Admin-only: grants or revokes admin/responder/viewer access for a user."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {user_id} not found.",
+        )
+
+    user.role = role_in.role
+    await db.flush()
+
+    await record_audit_log(
+        db=db,
+        actor_id=current_user.id,
+        entity_type="user",
+        action="USER_ROLE_CHANGED",
+        entity_id=user.id,
+        changes={"role": role_in.role.value},
+        ip_address=request.client.host if request.client else None,
+    )
+
+    await db.commit()
+    await db.refresh(user)
+    return user

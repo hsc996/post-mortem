@@ -1,15 +1,14 @@
 import uuid
-from pydantic import BaseModel, EmailStr, field_validator, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
 from src.models.user import UserRole
 
 
 class UserCreate(BaseModel):
-    email: EmailStr
+    email: EmailStr = Field(..., max_length=255)
     password: str
-    first_name: str
-    last_name: str
-    role: UserRole = UserRole.RESPONDER
-    phone_number: str | None = None
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    phone_number: str | None = Field(default=None, max_length=50)
 
     @field_validator("password")
     @classmethod
@@ -35,6 +34,10 @@ class UserResponse(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class RoleUpdate(BaseModel):
+    role: UserRole
 
 
 class TokenData(BaseModel):

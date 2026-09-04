@@ -34,8 +34,6 @@ class Incident(Base, TimestampMixin):
     )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
-
-    # FK mapping
     reporter_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -51,3 +49,10 @@ class Incident(Base, TimestampMixin):
     mitigation_state: Mapped["MitigationState | None"] = relationship(
         back_populates="incident", uselist=False, cascade="all, delete-orphan"
     )
+
+    @property
+    def mttr_seconds(self) -> float | None:
+        """Read-time mean-time-to-resolution, in seconds. None until resolved."""
+        if self.resolved_at is None:
+            return None
+        return (self.resolved_at - self.created_at).total_seconds()

@@ -61,6 +61,19 @@ async def test_create_mitigation_as_responder_succeeds(client, make_user, as_use
 
 
 @pytest.mark.asyncio
+async def test_create_mitigation_summary_too_long_returns_422(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    incident = await create_incident(client)
+
+    response = await client.post(
+        mitigation_url(incident["id"]), json=mitigation_payload(summary="x" * 2_001)
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_create_mitigation_as_viewer_forbidden(client, make_user, as_user):
     responder = await make_user(role=UserRole.RESPONDER)
     as_user(responder)
@@ -230,6 +243,21 @@ async def test_clear_mitigation_not_found_returns_404(client, make_user, as_user
     response = await client.delete(mitigation_url(incident["id"]))
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_mitigation_actions_appear_in_incident_audit_log(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    incident = await create_incident(client)
+    await client.post(mitigation_url(incident["id"]), json=mitigation_payload())
+    await client.delete(mitigation_url(incident["id"]))
+
+    response = await client.get(f"{INCIDENTS_URL}{incident['id']}/audit-log")
+
+    assert response.status_code == 200
+    actions = [entry["action"] for entry in response.json()]
+    assert actions == ["INCIDENT_CREATED", "MITIGATION_CREATED", "MITIGATION_DELETED"]
 
 
 @pytest.mark.asyncio

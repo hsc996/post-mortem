@@ -1,9 +1,9 @@
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.audit import AuditLog
-
 
 async def record_audit_log(
     db: AsyncSession,
@@ -12,6 +12,8 @@ async def record_audit_log(
     action: str,
     entity_id: uuid.UUID,
     changes: dict,
+    incident_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
 ) -> None:
     log_entry = AuditLog(
         actor_id=actor_id,
@@ -19,5 +21,17 @@ async def record_audit_log(
         entity_id=entity_id,
         action=action,
         changes=changes,
+        incident_id=incident_id,
+        ip_address=ip_address,
     )
     db.add(log_entry)
+
+
+async def list_audit_log_for_incident(db: AsyncSession, incident_id: uuid.UUID) -> list[AuditLog]:
+    """Returns the full audit timeline for an incident, oldest first."""
+    result = await db.execute(
+        select(AuditLog)
+        .where(AuditLog.incident_id == incident_id)
+        .order_by(AuditLog.created_at)
+    )
+    return list(result.scalars().all())

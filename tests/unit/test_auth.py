@@ -47,7 +47,7 @@ async def test_register_user_success(client):
 
     assert response.status_code == 201
     body = response.json()
-    assert body["role"] == "responder"
+    assert body["role"] == "viewer"
     assert body["is_active"] is True
     assert "password" not in body
     assert "hashed_password" not in body
@@ -68,6 +68,51 @@ async def test_register_user_weak_password_returns_422(client):
     response = await client.post(REGISTER_URL, json=register_payload(password="short"))
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_register_user_first_name_too_long_returns_422(client):
+    response = await client.post(
+        REGISTER_URL, json=register_payload(first_name="x" * 101)
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_register_user_ignores_role_override_in_payload(client):
+    """The `role` field was removed from UserCreate; self-registration always
+    yields a VIEWER regardless of what a client sends for it."""
+    response = await client.post(REGISTER_URL, json=register_payload(role="admin"))
+
+    assert response.status_code == 201
+    assert response.json()["role"] == "viewer"
+
+
+@pytest.mark.asyncio
+async def test_login_rate_limited_after_five_attempts(client, db_session):
+    user = await create_user_with_password(db_session)
+
+    for _ in range(5):
+        response = await client.post(
+            LOGIN_URL, data={"username": user.email, "password": "wrong-password"}
+        )
+        assert response.status_code == 401
+
+    response = await client.post(
+        LOGIN_URL, data={"username": user.email, "password": "wrong-password"}
+    )
+    assert response.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_register_rate_limited_after_five_attempts(client):
+    for _ in range(5):
+        response = await client.post(REGISTER_URL, json=register_payload())
+        assert response.status_code == 201
+
+    response = await client.post(REGISTER_URL, json=register_payload())
+    assert response.status_code == 429
 
 
 @pytest.mark.asyncio
@@ -156,3 +201,42 @@ async def test_logout_invalid_token_returns_401(client):
     )
 
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_update_user_role_as_admin_succeeds(client, make_user, as_user):
+    admin = await make_user(role=UserRole.ADMIN)
+    target = await make_user(role=UserRole.RESPONDER)
+    as_user(admin)
+
+    response = await client.patch(
+        f"/api/v1/auth/users/{target.id}/role", json={"role": "admin"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_update_user_role_as_non_admin_forbidden(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    target = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+
+    response = await client.patch(
+        f"/api/v1/auth/users/{target.id}/role", json={"role": "admin"}
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_update_user_role_unknown_user_returns_404(client, make_user, as_user):
+    admin = await make_user(role=UserRole.ADMIN)
+    as_user(admin)
+
+    response = await client.patch(
+        f"/api/v1/auth/users/{uuid.uuid4()}/role", json={"role": "admin"}
+    )
+
+    assert response.status_code == 404

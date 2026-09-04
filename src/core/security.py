@@ -12,6 +12,7 @@ from src.models.revoked_token import RevokedToken
 
 ALGORITHM = "HS256"
 MAX_PASSWORD_BYTES = 72
+DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt()).decode("utf-8")
 
 
 def get_password_hash(password: str) -> str:

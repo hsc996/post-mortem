@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,18 +9,21 @@ from src.api.deps import get_current_user, RequireRole
 from src.core.database import get_db
 from src.models.incident import Incident, IncidentSeverity, IncidentStatus
 from src.models.user import User, UserRole
+from src.schemas.audit import AuditLogResponse
 from src.schemas.incident import IncidentCreate, IncidentUpdate, IncidentResponse
-from src.services.audit import record_audit_log
+from src.services.audit import list_audit_log_for_incident, record_audit_log
 from src.services.incidents import (
     apply_optimistic_update,
     ensure_assignee_exists,
     get_incident_or_404,
 )
+from src.services.mitigations import get_mitigation_by_incident
 
 router = APIRouter(prefix="/incidents", tags=["Incidents"])
 
 @router.post("/", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED)
 async def create_incident(
+    request: Request,
     incident_in: IncidentCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(
@@ -50,7 +53,9 @@ async def create_incident(
         entity_type="incident",
         action="INCIDENT_CREATED",
         entity_id=incident.id,
+        incident_id=incident.id,
         changes=incident_in.model_dump(mode="json"),
+        ip_address=request.client.host if request.client else None,
     )
     await db.commit()
     await db.refresh(incident)
@@ -96,6 +101,7 @@ async def get_incident(
 
 @router.patch("/{incident_id}", response_model=IncidentResponse)
 async def update_incident(
+    request: Request,
     incident_id: uuid.UUID,
     incident_in: IncidentUpdate,
     db: AsyncSession = Depends(get_db),
@@ -112,10 +118,14 @@ async def update_incident(
             detail="No fields provided to update.",
         )
 
-    if update_data.get("status") == IncidentStatus.RESOLVED:
+    if "status" in update_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Use POST /incidents/{incident_id}/resolve to resolve an incident.",
+            detail=(
+                "Status transitions are not permitted via PATCH. Use "
+                "POST /incidents/{incident_id}/resolve to resolve an incident, or the "
+                "mitigation endpoints to move between OPEN and MITIGATED."
+            ),
         )
 
     if "assignee_id" in update_data:
@@ -131,7 +141,9 @@ async def update_incident(
         entity_type="incident",
         action="INCIDENT_UPDATED",
         entity_id=incident_id,
+        incident_id=incident_id,
         changes=incident_in.model_dump(mode="json", exclude_unset=True, exclude={"version"}),
+        ip_address=request.client.host if request.client else None,
     )
 
     await db.commit()
@@ -140,6 +152,7 @@ async def update_incident(
 
 @router.post("/{incident_id}/resolve", response_model=IncidentResponse)
 async def resolve_incident(
+    request: Request,
     incident_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(
@@ -153,6 +166,15 @@ async def resolve_incident(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incident is already marked as RESOLVED.",
+        )
+
+    if await get_mitigation_by_incident(db, incident_id) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Cannot resolve an incident with an active mitigation. "
+                "Clear the mitigation first via DELETE /incidents/{incident_id}/mitigation."
+            ),
         )
 
     now = datetime.now(timezone.utc)
@@ -171,13 +193,26 @@ async def resolve_incident(
         entity_type="incident",
         action="INCIDENT_RESOLVED",
         entity_id=incident.id,
+        incident_id=incident.id,
         changes={
             "status": IncidentStatus.RESOLVED.value,
             "resolved_at": now.isoformat(),
             "mttr_seconds": mttr_seconds,
         },
+        ip_address=request.client.host if request.client else None,
     )
 
     await db.commit()
     return await get_incident_or_404(db, incident_id)
+
+
+@router.get("/{incident_id}/audit-log", response_model=list[AuditLogResponse])
+async def get_incident_audit_log(
+    incident_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Returns the full, ordered audit timeline for an incident."""
+    await get_incident_or_404(db, incident_id)
+    return await list_audit_log_for_incident(db, incident_id)
 

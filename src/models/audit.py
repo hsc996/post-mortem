@@ -16,5 +16,8 @@ class AuditLog(Base, TimestampMixin):
     )
     changes: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    incident_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("incidents.id", ondelete="CASCADE"), nullable=True, index=True
+    )
 
 

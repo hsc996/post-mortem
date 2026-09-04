@@ -46,6 +46,18 @@ async def test_create_incident_as_viewer_forbidden(client, make_user, as_user):
 
 
 @pytest.mark.asyncio
+async def test_create_incident_description_too_long_returns_422(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+
+    response = await client.post(
+        INCIDENTS_URL, json=incident_payload(description="x" * 10_001)
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_create_incident_with_unknown_assignee_returns_400(client, make_user, as_user):
     responder = await make_user(role=UserRole.RESPONDER)
     as_user(responder)
@@ -71,6 +83,7 @@ async def test_create_incident_records_audit_log(client, make_user, as_user, db_
     log_entry = result.scalar_one()
     assert log_entry.action == "INCIDENT_CREATED"
     assert log_entry.actor_id == responder.id
+    assert log_entry.ip_address is not None
 
 
 @pytest.mark.asyncio
@@ -181,6 +194,20 @@ async def test_update_incident_cannot_set_status_resolved_directly(client, make_
 
 
 @pytest.mark.asyncio
+async def test_update_incident_cannot_set_status_mitigated_directly(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    created = (await client.post(INCIDENTS_URL, json=incident_payload())).json()
+
+    response = await client.patch(
+        f"{INCIDENTS_URL}{created['id']}",
+        json={"version": created["version"], "status": "mitigated"},
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_update_incident_with_unknown_assignee_returns_400(client, make_user, as_user):
     responder = await make_user(role=UserRole.RESPONDER)
     as_user(responder)
@@ -233,6 +260,36 @@ async def test_resolve_incident_already_resolved_returns_400(client, make_user, 
 
 
 @pytest.mark.asyncio
+async def test_resolve_incident_blocked_while_mitigation_active(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    created = (await client.post(INCIDENTS_URL, json=incident_payload())).json()
+    await client.post(
+        f"{INCIDENTS_URL}{created['id']}/mitigation/",
+        json={"summary": "Rolled back to previous deploy", "ttl_minutes": 60},
+    )
+
+    response = await client.post(f"{INCIDENTS_URL}{created['id']}/resolve")
+
+    assert response.status_code == 400
+
+    incident_after = (await client.get(f"{INCIDENTS_URL}{created['id']}")).json()
+    assert incident_after["status"] == "mitigated"
+
+
+@pytest.mark.asyncio
+async def test_incident_mttr_seconds_null_until_resolved(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    created = (await client.post(INCIDENTS_URL, json=incident_payload())).json()
+    assert created["mttr_seconds"] is None
+
+    response = await client.post(f"{INCIDENTS_URL}{created['id']}/resolve")
+
+    assert response.json()["mttr_seconds"] >= 0
+
+
+@pytest.mark.asyncio
 async def test_resolve_incident_as_viewer_forbidden(client, make_user, as_user):
     responder = await make_user(role=UserRole.RESPONDER)
     as_user(responder)
@@ -243,3 +300,45 @@ async def test_resolve_incident_as_viewer_forbidden(client, make_user, as_user):
     response = await client.post(f"{INCIDENTS_URL}{created['id']}/resolve")
 
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_incident_audit_log_returns_ordered_timeline(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    created = (await client.post(INCIDENTS_URL, json=incident_payload())).json()
+    await client.patch(
+        f"{INCIDENTS_URL}{created['id']}",
+        json={"version": created["version"], "severity": "critical"},
+    )
+    await client.post(f"{INCIDENTS_URL}{created['id']}/resolve")
+
+    response = await client.get(f"{INCIDENTS_URL}{created['id']}/audit-log")
+
+    assert response.status_code == 200
+    actions = [entry["action"] for entry in response.json()]
+    assert actions == ["INCIDENT_CREATED", "INCIDENT_UPDATED", "INCIDENT_RESOLVED"]
+
+
+@pytest.mark.asyncio
+async def test_get_incident_audit_log_not_found_returns_404(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+
+    response = await client.get(f"{INCIDENTS_URL}{uuid.uuid4()}/audit-log")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_incident_audit_log_viewer_can_read(client, make_user, as_user):
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    created = (await client.post(INCIDENTS_URL, json=incident_payload())).json()
+
+    viewer = await make_user(role=UserRole.VIEWER)
+    as_user(viewer)
+    response = await client.get(f"{INCIDENTS_URL}{created['id']}/audit-log")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
