@@ -16,6 +16,9 @@ class Invite(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False, index=True
+    )
     email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     role: Mapped[UserRole] = mapped_column(SQLEnum(UserRole, name="userrole"), nullable=False)
     token: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)

@@ -1,5 +1,7 @@
 import uuid
-from pydantic import BaseModel, EmailStr, ConfigDict
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
 from src.models.user import UserRole
 
 
@@ -10,8 +12,30 @@ class UserResponse(BaseModel):
     last_name: str
     role: UserRole
     is_active: bool
+    account_name: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class RegisterRequest(BaseModel):
+    """Public self-registration — always creates a brand-new isolated account
+    with the registrant as its founding ADMIN."""
+
+    account_name: str = Field(..., min_length=1, max_length=255)
+    email: EmailStr = Field(..., max_length=255)
+    password: str
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    phone_number: str | None = Field(default=None, max_length=50)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 12:
+            raise ValueError("Password must be at least 12 characters long")
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("Password must not exceed 72 bytes")
+        return v
 
 
 class UserSummary(BaseModel):

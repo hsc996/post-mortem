@@ -1,6 +1,6 @@
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -20,9 +20,16 @@ from src.core.security import (
     revoke_token,
     verify_password,
 )
+from src.models.account import Account
 from src.models.invite import Invite
 from src.models.user import User, UserRole
-from src.schemas.auth import RoleUpdate, Token, UserResponse, UserSummary
+from src.schemas.auth import (
+    RegisterRequest,
+    RoleUpdate,
+    Token,
+    UserResponse,
+    UserSummary,
+)
 from src.schemas.invite import (
     AcceptInviteRequest,
     InviteCreate,
@@ -36,14 +43,57 @@ from src.services.email import send_invite_email
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+@router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
+async def register(request: Request, register_in: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    """Public: self-registration always creates a brand-new isolated account with a
+    freshly-created ADMIN user as its founder — the only way a new account gets
+    created. Joining an EXISTING account happens exclusively via
+    POST /auth/invites/{token}/accept."""
+    result = await db.execute(select(User).where(User.email == register_in.email))
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User with this email already exists.",
+        )
+
+    account = Account(name=register_in.account_name)
+    db.add(account)
+    await db.flush()
+
+    user = User(
+        account_id=account.id,
+        email=register_in.email,
+        hashed_password=get_password_hash(register_in.password),
+        first_name=register_in.first_name,
+        last_name=register_in.last_name,
+        role=UserRole.ADMIN,
+        phone=register_in.phone_number,
+    )
+    db.add(user)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User with this email already exists.",
+        )
+    await db.refresh(user)
+
+    access_token = create_access_token(data={"sub": str(user.id), "role": user.role.value})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
 @router.post("/invites", response_model=InviteCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_invite(
     invite_in: InviteCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(RequireRole([UserRole.ADMIN])),
 ):
-    """Admin-only: invites a new user by email with a pre-set role. Self-registration
-    doesn't exist — this is the only way a new account gets created."""
+    """Admin-only: invites a new user by email with a pre-set role, joining the
+    admin's own account. Creating a brand-new account happens exclusively via
+    POST /auth/register."""
     result = await db.execute(select(User).where(User.email == invite_in.email))
     if result.scalar_one_or_none():
         raise HTTPException(
@@ -52,10 +102,11 @@ async def create_invite(
         )
 
     invite = Invite(
+        account_id=current_user.account_id,
         email=invite_in.email,
         role=invite_in.role,
         token=secrets.token_urlsafe(32),
-        expires_at=datetime.now(timezone.utc) + timedelta(days=settings.INVITE_TTL_DAYS),
+        expires_at=datetime.now(UTC) + timedelta(days=settings.INVITE_TTL_DAYS),
         invited_by_id=current_user.id,
     )
     db.add(invite)
@@ -80,8 +131,12 @@ async def list_invites(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(RequireRole([UserRole.ADMIN])),
 ):
-    """Admin-only: pending and expired invites, most recent first."""
-    result = await db.execute(select(Invite).order_by(Invite.created_at.desc()))
+    """Admin-only: pending and expired invites for the caller's account, most recent first."""
+    result = await db.execute(
+        select(Invite)
+        .where(Invite.account_id == current_user.account_id)
+        .order_by(Invite.created_at.desc())
+    )
     return result.scalars().all()
 
 
@@ -116,6 +171,7 @@ async def accept_invite(
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Invite has expired.")
 
     user = User(
+        account_id=invite.account_id,
         email=invite.email,
         hashed_password=get_password_hash(accept_in.password),
         first_name=accept_in.first_name,
@@ -124,7 +180,7 @@ async def accept_invite(
         phone=accept_in.phone_number,
     )
     db.add(user)
-    invite.accepted_at = datetime.now(timezone.utc)
+    invite.accepted_at = datetime.now(UTC)
     try:
         await db.commit()
     except IntegrityError:
@@ -199,12 +255,19 @@ async def list_users(
     limit: int = Query(100, ge=1, le=200),
 ):
     """
-    Lists user accounts. Any authenticated user can call this — the incident
-    feed and audit trail need it to resolve reporter/assignee/actor names —
-    but only admins (who also drive the role-management screen) get email
-    and role back; everyone else gets a name-only directory entry.
+    Lists user accounts within the caller's own account. Any authenticated user
+    can call this — the incident feed and audit trail need it to resolve
+    reporter/assignee/actor names — but only admins (who also drive the
+    role-management screen) get email and role back; everyone else gets a
+    name-only directory entry.
     """
-    result = await db.execute(select(User).order_by(User.first_name).offset(skip).limit(limit))
+    result = await db.execute(
+        select(User)
+        .where(User.account_id == current_user.account_id)
+        .order_by(User.first_name)
+        .offset(skip)
+        .limit(limit)
+    )
     users = result.scalars().all()
     if current_user.role == UserRole.ADMIN:
         return users
@@ -219,8 +282,11 @@ async def update_user_role(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(RequireRole([UserRole.ADMIN])),
 ):
-    """Admin-only: grants or revokes admin/responder/viewer access for a user."""
-    result = await db.execute(select(User).where(User.id == user_id))
+    """Admin-only: grants or revokes admin/responder/viewer access for a user
+    within the caller's own account."""
+    result = await db.execute(
+        select(User).where(User.id == user_id, User.account_id == current_user.account_id)
+    )
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(
@@ -234,6 +300,7 @@ async def update_user_role(
     await record_audit_log(
         db=db,
         actor_id=current_user.id,
+        account_id=current_user.account_id,
         entity_type="user",
         action="USER_ROLE_CHANGED",
         entity_id=user.id,

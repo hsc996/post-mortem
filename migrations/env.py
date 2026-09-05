@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from src.config import settings
 from src.models.base import Base
+import src.models.account
 import src.models.audit
 import src.models.incident
 import src.models.invite

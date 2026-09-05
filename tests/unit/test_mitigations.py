@@ -165,6 +165,24 @@ async def test_get_mitigation_not_found_returns_404(client, make_user, as_user):
 
 
 @pytest.mark.asyncio
+async def test_get_mitigation_cross_account_returns_404(client, make_user, make_account, as_user):
+    """Regression: GET .../mitigation's only account guard was the mitigation
+    lookup itself (it never re-checked the incident), so this was the one
+    leaking endpoint an incident-level fix wouldn't have caught."""
+    other_account = await make_account(name="Other Co")
+    other_responder = await make_user(role=UserRole.RESPONDER, account=other_account)
+    as_user(other_responder)
+    incident = await create_incident(client)
+    await client.post(mitigation_url(incident["id"]), json=mitigation_payload())
+
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    response = await client.get(mitigation_url(incident["id"]))
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_get_mitigation_requires_authentication(client):
     response = await client.get(mitigation_url(uuid.uuid4()))
 

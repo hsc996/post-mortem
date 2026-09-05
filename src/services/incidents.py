@@ -8,11 +8,15 @@ from src.models.incident import Incident
 from src.models.user import User
 
 
-async def ensure_assignee_exists(db: AsyncSession, assignee_id: uuid.UUID | None) -> None:
-    """Validates that assignee_id, if provided, references an existing user."""
+async def ensure_assignee_exists(
+    db: AsyncSession, assignee_id: uuid.UUID | None, account_id: uuid.UUID
+) -> None:
+    """Validates that assignee_id, if provided, references an existing user in the same account."""
     if assignee_id is None:
         return
-    result = await db.execute(select(User.id).where(User.id == assignee_id))
+    result = await db.execute(
+        select(User.id).where(User.id == assignee_id, User.account_id == account_id)
+    )
     if result.scalar_one_or_none() is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -20,9 +24,11 @@ async def ensure_assignee_exists(db: AsyncSession, assignee_id: uuid.UUID | None
         )
 
 
-async def get_incident_or_404(db: AsyncSession, incident_id: uuid.UUID) -> Incident:
-    """Fetches an incident by ID, raising 404 if it doesn't exist."""
-    result = await db.execute(select(Incident).where(Incident.id == incident_id))
+async def get_incident_or_404(db: AsyncSession, incident_id: uuid.UUID, account_id: uuid.UUID) -> Incident:
+    """Fetches an incident by ID within the caller's account, raising 404 if it doesn't exist."""
+    result = await db.execute(
+        select(Incident).where(Incident.id == incident_id, Incident.account_id == account_id)
+    )
     incident = result.scalar_one_or_none()
     if incident is None:
         raise HTTPException(
@@ -35,13 +41,18 @@ async def get_incident_or_404(db: AsyncSession, incident_id: uuid.UUID) -> Incid
 async def apply_optimistic_update(
     db: AsyncSession,
     incident_id: uuid.UUID,
+    account_id: uuid.UUID,
     expected_version: int,
     values: dict,
 ) -> None:
     """Conditionally updates an incident gated on its expected version (OCC)"""
     stmt = (
         update(Incident)
-        .where(Incident.id == incident_id, Incident.version == expected_version)
+        .where(
+            Incident.id == incident_id,
+            Incident.account_id == account_id,
+            Incident.version == expected_version,
+        )
         .values(version=Incident.version + 1, **values)
         .execution_options(synchronize_session="fetch")
     )
@@ -51,7 +62,11 @@ async def apply_optimistic_update(
         return
 
     current_version = (
-        await db.execute(select(Incident.version).where(Incident.id == incident_id))
+        await db.execute(
+            select(Incident.version).where(
+                Incident.id == incident_id, Incident.account_id == account_id
+            )
+        )
     ).scalar_one_or_none()
 
     if current_version is None:

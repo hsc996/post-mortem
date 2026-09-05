@@ -115,11 +115,42 @@ async def test_list_incidents_respects_limit(client, make_user, as_user):
 
 
 @pytest.mark.asyncio
+async def test_list_incidents_excludes_other_accounts_incidents(client, make_user, make_account, as_user):
+    other_account = await make_account(name="Other Co")
+    other_responder = await make_user(role=UserRole.RESPONDER, account=other_account)
+    as_user(other_responder)
+    await client.post(INCIDENTS_URL, json=incident_payload())
+
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    await client.post(INCIDENTS_URL, json=incident_payload())
+
+    response = await client.get(INCIDENTS_URL)
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+
+@pytest.mark.asyncio
 async def test_get_incident_not_found_returns_404(client, make_user, as_user):
     viewer = await make_user(role=UserRole.VIEWER)
     as_user(viewer)
 
     response = await client.get(f"{INCIDENTS_URL}{uuid.uuid4()}")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_incident_cross_account_returns_404(client, make_user, make_account, as_user):
+    other_account = await make_account(name="Other Co")
+    other_responder = await make_user(role=UserRole.RESPONDER, account=other_account)
+    as_user(other_responder)
+    created = (await client.post(INCIDENTS_URL, json=incident_payload())).json()
+
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    response = await client.get(f"{INCIDENTS_URL}{created['id']}")
 
     assert response.status_code == 404
 
@@ -219,6 +250,43 @@ async def test_update_incident_with_unknown_assignee_returns_400(client, make_us
     )
 
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_assign_incident_to_user_in_other_account_rejected(client, make_user, make_account, as_user):
+    other_account = await make_account(name="Other Co")
+    outsider = await make_user(role=UserRole.RESPONDER, account=other_account)
+
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    created = (await client.post(INCIDENTS_URL, json=incident_payload())).json()
+
+    response = await client.patch(
+        f"{INCIDENTS_URL}{created['id']}",
+        json={"version": created["version"], "assignee_id": str(outsider.id)},
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_incident_cross_account_returns_404_not_409(client, make_user, make_account, as_user):
+    """Regression: the version-conflict fallback lookup used to be unscoped,
+    so a cross-account PATCH attempt would confirm the row exists via a 409
+    instead of a 404 — an existence oracle across tenant boundaries."""
+    other_account = await make_account(name="Other Co")
+    other_responder = await make_user(role=UserRole.RESPONDER, account=other_account)
+    as_user(other_responder)
+    created = (await client.post(INCIDENTS_URL, json=incident_payload())).json()
+
+    responder = await make_user(role=UserRole.RESPONDER)
+    as_user(responder)
+    response = await client.patch(
+        f"{INCIDENTS_URL}{created['id']}",
+        json={"version": created["version"], "severity": "critical"},
+    )
+
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

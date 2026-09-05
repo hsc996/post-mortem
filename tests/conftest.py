@@ -15,6 +15,7 @@ from src.api.deps import get_current_user
 from src.core.database import get_db
 from src.core.rate_limit import limiter
 from src.main import app
+from src.models.account import Account
 from src.models.base import Base
 from src.models.user import User, UserRole
 
@@ -75,11 +76,35 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest_asyncio.fixture
-async def make_user(db_session: AsyncSession):
-    """Factory fixture for creating persisted users with a given role."""
+async def make_account(db_session: AsyncSession):
+    """Factory fixture for creating persisted accounts (tenants)."""
 
-    async def _make_user(role: UserRole = UserRole.RESPONDER, **overrides) -> User:
+    async def _make_account(**overrides) -> Account:
+        account = Account(name=overrides.get("name", f"Test Account {uuid.uuid4()}"))
+        db_session.add(account)
+        await db_session.commit()
+        await db_session.refresh(account)
+        return account
+
+    return _make_account
+
+
+@pytest_asyncio.fixture
+async def default_account(make_account) -> Account:
+    """One shared account used by `make_user` by default, so tests that create
+    multiple users and expect them to see each other's data (the common case)
+    don't need to know about accounts at all. Cross-account tests pass an
+    explicit `account=` to `make_user` instead."""
+    return await make_account(name="Test Co")
+
+
+@pytest_asyncio.fixture
+async def make_user(db_session: AsyncSession, default_account: Account):
+    """Factory fixture for creating persisted users with a given role, in a given account."""
+
+    async def _make_user(role: UserRole = UserRole.RESPONDER, account: Account | None = None, **overrides) -> User:
         user = User(
+            account_id=(account or default_account).id,
             email=overrides.get("email", f"{uuid.uuid4()}@pulseguard.io"),
             hashed_password="hashed_secret_123",
             first_name=overrides.get("first_name", "Test"),

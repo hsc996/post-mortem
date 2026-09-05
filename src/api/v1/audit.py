@@ -34,15 +34,13 @@ async def list_audit_logs(
     Retrieves system audit logs with optional entity, actor, and pagination filters.
     Restricted to ADMIN and RESPONDER roles.
     """
-    stmt = select(AuditLog)
-
     filters = [
         AuditLog.entity_type == entity_type if entity_type else None,
         AuditLog.entity_id == entity_id if entity_id else None,
         AuditLog.actor_id == actor_id if actor_id else None,
     ]
 
-    stmt = stmt.where(*[f for f in filters if f is not None])
+    stmt = select(AuditLog).where(AuditLog.account_id == current_user.account_id, *[f for f in filters if f is not None])
     stmt = stmt.order_by(AuditLog.created_at.desc()).offset(skip).limit(limit)
 
     result = await db.execute(stmt)
@@ -66,7 +64,7 @@ async def get_entity_audit_trail(
     """
     stmt = (
         select(AuditLog)
-        .where(AuditLog.entity_id == entity_id)
+        .where(AuditLog.entity_id == entity_id, AuditLog.account_id == current_user.account_id)
         .order_by(AuditLog.created_at.desc())
         .offset(skip)
         .limit(limit)

@@ -31,9 +31,10 @@ async def create_incident(
     ),
 ):
     """Creates a new incident record and initializes the version counter to 1."""
-    await ensure_assignee_exists(db, incident_in.assignee_id)
+    await ensure_assignee_exists(db, incident_in.assignee_id, current_user.account_id)
 
     incident = Incident(
+        account_id=current_user.account_id,
         title=incident_in.title,
         description=incident_in.description,
         service_name=incident_in.service_name,
@@ -50,6 +51,7 @@ async def create_incident(
     await record_audit_log(
         db=db,
         actor_id=current_user.id,
+        account_id=current_user.account_id,
         entity_type="incident",
         action="INCIDENT_CREATED",
         entity_id=incident.id,
@@ -73,7 +75,7 @@ async def list_incidents(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100)
 ):
-    """Lists incidents with pagination and optional field-based filtering."""
+    """Lists incidents within the caller's account, with pagination and optional field-based filtering."""
     filters = [
         Incident.service_name == service_name if service_name else None,
         Incident.status == incident_status if incident_status else None,
@@ -82,7 +84,7 @@ async def list_incidents(
 
     stmt = (
         select(Incident)
-        .where(*[f for f in filters if f is not None])
+        .where(Incident.account_id == current_user.account_id, *[f for f in filters if f is not None])
         .offset(skip)
         .limit(limit)
     )
@@ -96,8 +98,8 @@ async def get_incident(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Retrieves a single incident by ID."""
-    return await get_incident_or_404(db, incident_id)
+    """Retrieves a single incident by ID within the caller's account."""
+    return await get_incident_or_404(db, incident_id, current_user.account_id)
 
 @router.patch("/{incident_id}", response_model=IncidentResponse)
 async def update_incident(
@@ -129,15 +131,16 @@ async def update_incident(
         )
 
     if "assignee_id" in update_data:
-        await ensure_assignee_exists(db, update_data["assignee_id"])
+        await ensure_assignee_exists(db, update_data["assignee_id"], current_user.account_id)
 
     update_data["updated_at"] = datetime.now(timezone.utc)
 
-    await apply_optimistic_update(db, incident_id, incident_in.version, update_data)
+    await apply_optimistic_update(db, incident_id, current_user.account_id, incident_in.version, update_data)
 
     await record_audit_log(
         db=db,
         actor_id=current_user.id,
+        account_id=current_user.account_id,
         entity_type="incident",
         action="INCIDENT_UPDATED",
         entity_id=incident_id,
@@ -147,7 +150,7 @@ async def update_incident(
     )
 
     await db.commit()
-    return await get_incident_or_404(db, incident_id)
+    return await get_incident_or_404(db, incident_id, current_user.account_id)
 
 
 @router.post("/{incident_id}/resolve", response_model=IncidentResponse)
@@ -160,7 +163,7 @@ async def resolve_incident(
     ),
 ):
     """Transitions incident to RESOLVED and calculates MTTR in seconds."""
-    incident = await get_incident_or_404(db, incident_id)
+    incident = await get_incident_or_404(db, incident_id, current_user.account_id)
 
     if incident.status == IncidentStatus.RESOLVED:
         raise HTTPException(
@@ -168,7 +171,7 @@ async def resolve_incident(
             detail="Incident is already marked as RESOLVED.",
         )
 
-    if await get_mitigation_by_incident(db, incident_id) is not None:
+    if await get_mitigation_by_incident(db, incident_id, current_user.account_id) is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -183,6 +186,7 @@ async def resolve_incident(
     await apply_optimistic_update(
         db,
         incident_id,
+        current_user.account_id,
         incident.version,
         {"status": IncidentStatus.RESOLVED, "resolved_at": now},
     )
@@ -190,6 +194,7 @@ async def resolve_incident(
     await record_audit_log(
         db=db,
         actor_id=current_user.id,
+        account_id=current_user.account_id,
         entity_type="incident",
         action="INCIDENT_RESOLVED",
         entity_id=incident.id,
@@ -203,7 +208,7 @@ async def resolve_incident(
     )
 
     await db.commit()
-    return await get_incident_or_404(db, incident_id)
+    return await get_incident_or_404(db, incident_id, current_user.account_id)
 
 
 @router.get("/{incident_id}/audit-log", response_model=list[AuditLogResponse])
@@ -213,6 +218,6 @@ async def get_incident_audit_log(
     current_user: User = Depends(get_current_user),
 ):
     """Returns the full, ordered audit timeline for an incident."""
-    await get_incident_or_404(db, incident_id)
-    return await list_audit_log_for_incident(db, incident_id)
+    await get_incident_or_404(db, incident_id, current_user.account_id)
+    return await list_audit_log_for_incident(db, incident_id, current_user.account_id)
 

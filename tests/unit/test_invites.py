@@ -24,6 +24,7 @@ def accept_payload(**overrides) -> dict:
 
 async def create_invite(
     db_session,
+    account_id: uuid.UUID,
     email: str | None = None,
     role: UserRole = UserRole.VIEWER,
     invited_by_id: uuid.UUID | None = None,
@@ -31,6 +32,7 @@ async def create_invite(
     accepted_at: datetime | None = None,
 ) -> Invite:
     invite = Invite(
+        account_id=account_id,
         email=email or f"{uuid.uuid4()}@pulseguard.io",
         role=role,
         token=uuid.uuid4().hex,
@@ -89,7 +91,23 @@ async def test_create_invite_existing_email_returns_400(client, make_user, as_us
 @pytest.mark.asyncio
 async def test_list_invites_as_admin(client, make_user, as_user, db_session):
     admin = await make_user(role=UserRole.ADMIN)
-    await create_invite(db_session, invited_by_id=admin.id)
+    await create_invite(db_session, admin.account_id, invited_by_id=admin.id)
+    as_user(admin)
+
+    response = await client.get(INVITES_URL)
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_invites_only_returns_same_account(client, make_user, make_account, as_user, db_session):
+    other_account = await make_account(name="Other Co")
+    other_admin = await make_user(role=UserRole.ADMIN, account=other_account)
+    await create_invite(db_session, other_admin.account_id, invited_by_id=other_admin.id)
+
+    admin = await make_user(role=UserRole.ADMIN)
+    await create_invite(db_session, admin.account_id, invited_by_id=admin.id)
     as_user(admin)
 
     response = await client.get(INVITES_URL)
@@ -111,7 +129,7 @@ async def test_list_invites_as_non_admin_forbidden(client, make_user, as_user):
 @pytest.mark.asyncio
 async def test_preview_invite_valid_token(client, make_user, db_session):
     admin = await make_user(role=UserRole.ADMIN)
-    invite = await create_invite(db_session, role=UserRole.RESPONDER, invited_by_id=admin.id)
+    invite = await create_invite(db_session, admin.account_id, role=UserRole.RESPONDER, invited_by_id=admin.id)
 
     response = await client.get(f"{INVITES_URL}/{invite.token}")
 
@@ -133,6 +151,7 @@ async def test_preview_invite_expired_returns_410(client, make_user, db_session)
     admin = await make_user(role=UserRole.ADMIN)
     invite = await create_invite(
         db_session,
+        admin.account_id,
         invited_by_id=admin.id,
         expires_at=datetime.now(timezone.utc) - timedelta(days=1),
     )
@@ -146,7 +165,7 @@ async def test_preview_invite_expired_returns_410(client, make_user, db_session)
 async def test_preview_invite_already_accepted_returns_409(client, make_user, db_session):
     admin = await make_user(role=UserRole.ADMIN)
     invite = await create_invite(
-        db_session, invited_by_id=admin.id, accepted_at=datetime.now(timezone.utc)
+        db_session, admin.account_id, invited_by_id=admin.id, accepted_at=datetime.now(timezone.utc)
     )
 
     response = await client.get(f"{INVITES_URL}/{invite.token}")
@@ -157,7 +176,7 @@ async def test_preview_invite_already_accepted_returns_409(client, make_user, db
 @pytest.mark.asyncio
 async def test_accept_invite_success_creates_user_and_signs_in(client, make_user, db_session):
     admin = await make_user(role=UserRole.ADMIN)
-    invite = await create_invite(db_session, role=UserRole.RESPONDER, invited_by_id=admin.id)
+    invite = await create_invite(db_session, admin.account_id, role=UserRole.RESPONDER, invited_by_id=admin.id)
 
     response = await client.post(
         f"{INVITES_URL}/{invite.token}/accept", json=accept_payload()
@@ -176,6 +195,18 @@ async def test_accept_invite_success_creates_user_and_signs_in(client, make_user
 
 
 @pytest.mark.asyncio
+async def test_accept_invite_assigns_inviters_account(client, make_user, db_session):
+    admin = await make_user(role=UserRole.ADMIN)
+    invite = await create_invite(db_session, admin.account_id, role=UserRole.RESPONDER, invited_by_id=admin.id)
+
+    response = await client.post(f"{INVITES_URL}/{invite.token}/accept", json=accept_payload())
+    token = response.json()["access_token"]
+
+    me_response = await client.get(ME_URL, headers={"Authorization": f"Bearer {token}"})
+    assert me_response.json()["account_name"] == "Test Co"
+
+
+@pytest.mark.asyncio
 async def test_accept_invite_unknown_token_returns_404(client):
     response = await client.post(
         f"{INVITES_URL}/not-a-real-token/accept", json=accept_payload()
@@ -189,6 +220,7 @@ async def test_accept_invite_expired_returns_410(client, make_user, db_session):
     admin = await make_user(role=UserRole.ADMIN)
     invite = await create_invite(
         db_session,
+        admin.account_id,
         invited_by_id=admin.id,
         expires_at=datetime.now(timezone.utc) - timedelta(days=1),
     )
@@ -204,7 +236,7 @@ async def test_accept_invite_expired_returns_410(client, make_user, db_session):
 async def test_accept_invite_already_accepted_returns_409(client, make_user, db_session):
     admin = await make_user(role=UserRole.ADMIN)
     invite = await create_invite(
-        db_session, invited_by_id=admin.id, accepted_at=datetime.now(timezone.utc)
+        db_session, admin.account_id, invited_by_id=admin.id, accepted_at=datetime.now(timezone.utc)
     )
 
     response = await client.post(
@@ -217,7 +249,7 @@ async def test_accept_invite_already_accepted_returns_409(client, make_user, db_
 @pytest.mark.asyncio
 async def test_accept_invite_weak_password_returns_422(client, make_user, db_session):
     admin = await make_user(role=UserRole.ADMIN)
-    invite = await create_invite(db_session, invited_by_id=admin.id)
+    invite = await create_invite(db_session, admin.account_id, invited_by_id=admin.id)
 
     response = await client.post(
         f"{INVITES_URL}/{invite.token}/accept", json=accept_payload(password="short")
