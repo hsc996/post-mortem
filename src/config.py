@@ -20,6 +20,14 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: str = ""
 
+    # Email (invite delivery). Optional so the app still boots without it
+    # configured yet — invite creation degrades to "link returned, not
+    # emailed" rather than the whole service refusing to start.
+    RESEND_API_KEY: str | None = None
+    INVITE_FROM_EMAIL: str = "onboarding@resend.dev"
+    FRONTEND_URL: str = "http://localhost:5173"
+    INVITE_TTL_DAYS: int = 7
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

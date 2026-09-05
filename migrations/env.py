@@ -10,10 +10,10 @@ from src.config import settings
 from src.models.base import Base
 import src.models.audit
 import src.models.incident
+import src.models.invite
 import src.models.mitigation
 import src.models.revoked_token
 import src.models.user
-
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

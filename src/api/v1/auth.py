@@ -1,4 +1,6 @@
+import secrets
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -8,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireRole, get_current_user, oauth2_scheme
+from src.config import settings
 from src.core.database import get_db
 from src.core.rate_limit import limiter
 from src.core.security import (
@@ -17,45 +20,123 @@ from src.core.security import (
     revoke_token,
     verify_password,
 )
+from src.models.invite import Invite
 from src.models.user import User, UserRole
-from src.schemas.auth import RoleUpdate, Token, UserCreate, UserResponse, UserSummary
+from src.schemas.auth import RoleUpdate, Token, UserResponse, UserSummary
+from src.schemas.invite import (
+    AcceptInviteRequest,
+    InviteCreate,
+    InviteCreateResponse,
+    InvitePreview,
+    InviteSummary,
+)
 from src.services.audit import record_audit_log
+from src.services.email import send_invite_email
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/minute")
-async def register_user(request: Request, user_in: UserCreate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == user_in.email))
+@router.post("/invites", response_model=InviteCreateResponse, status_code=status.HTTP_201_CREATED)
+async def create_invite(
+    invite_in: InviteCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(RequireRole([UserRole.ADMIN])),
+):
+    """Admin-only: invites a new user by email with a pre-set role. Self-registration
+    doesn't exist — this is the only way a new account gets created."""
+    result = await db.execute(select(User).where(User.email == invite_in.email))
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this email already exists.",
         )
 
-    # Self-registration always creates a read-only VIEWER account; an existing
-    # admin must promote the user via PATCH /auth/users/{user_id}/role.
+    invite = Invite(
+        email=invite_in.email,
+        role=invite_in.role,
+        token=secrets.token_urlsafe(32),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=settings.INVITE_TTL_DAYS),
+        invited_by_id=current_user.id,
+    )
+    db.add(invite)
+    await db.flush()
+
+    invite_link = f"{settings.FRONTEND_URL}/invite/{invite.token}"
+    send_invite_email(invite.email, invite.role, invite_link)
+
+    await db.commit()
+    await db.refresh(invite)
+    return InviteCreateResponse(
+        id=invite.id,
+        email=invite.email,
+        role=invite.role,
+        expires_at=invite.expires_at,
+        invite_link=invite_link,
+    )
+
+
+@router.get("/invites", response_model=list[InviteSummary])
+async def list_invites(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(RequireRole([UserRole.ADMIN])),
+):
+    """Admin-only: pending and expired invites, most recent first."""
+    result = await db.execute(select(Invite).order_by(Invite.created_at.desc()))
+    return result.scalars().all()
+
+
+@router.get("/invites/{token}", response_model=InvitePreview)
+async def preview_invite(token: str, db: AsyncSession = Depends(get_db)):
+    """Public: lets the invite-accept screen show who/what the invite is for
+    before the invitee sets a password."""
+    result = await db.execute(select(Invite).where(Invite.token == token))
+    invite = result.scalar_one_or_none()
+    if invite is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found.")
+    if invite.is_accepted:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invite already accepted.")
+    if invite.is_expired:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Invite has expired.")
+    return invite
+
+
+@router.post("/invites/{token}/accept", response_model=Token, status_code=status.HTTP_201_CREATED)
+async def accept_invite(
+    token: str, accept_in: AcceptInviteRequest, db: AsyncSession = Depends(get_db)
+):
+    """Public: creates the real account with the invite's pre-set role and
+    signs the new user in immediately, same as a fresh login would."""
+    result = await db.execute(select(Invite).where(Invite.token == token))
+    invite = result.scalar_one_or_none()
+    if invite is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found.")
+    if invite.is_accepted:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invite already accepted.")
+    if invite.is_expired:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Invite has expired.")
+
     user = User(
-        email=user_in.email,
-        hashed_password=get_password_hash(user_in.password),
-        first_name=user_in.first_name,
-        last_name=user_in.last_name,
-        role=UserRole.VIEWER,
-        phone=user_in.phone_number,
+        email=invite.email,
+        hashed_password=get_password_hash(accept_in.password),
+        first_name=accept_in.first_name,
+        last_name=accept_in.last_name,
+        role=invite.role,
+        phone=accept_in.phone_number,
     )
     db.add(user)
+    invite.accepted_at = datetime.now(timezone.utc)
     try:
         await db.commit()
     except IntegrityError:
-        # Two concurrent registrations for the same email raced past the check above.
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this email already exists.",
         )
     await db.refresh(user)
-    return user
+
+    access_token = create_access_token(data={"sub": str(user.id), "role": user.role.value})
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
 @router.post("/login", response_model=Token)

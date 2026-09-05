@@ -8,23 +8,11 @@ from src.core.security import get_password_hash
 from src.models.revoked_token import RevokedToken
 from src.models.user import User, UserRole
 
-REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
 LOGOUT_URL = "/api/v1/auth/logout"
 ME_URL = "/api/v1/auth/me"
 
 PASSWORD = "Sup3rSecret!"
-
-
-def register_payload(**overrides) -> dict:
-    payload = {
-        "email": f"{uuid.uuid4()}@pulseguard.io",
-        "password": PASSWORD,
-        "first_name": "Alex",
-        "last_name": "Rivera",
-    }
-    payload.update(overrides)
-    return payload
 
 
 async def create_user_with_password(
@@ -45,54 +33,6 @@ async def create_user_with_password(
 
 
 @pytest.mark.asyncio
-async def test_register_user_success(client):
-    response = await client.post(REGISTER_URL, json=register_payload())
-
-    assert response.status_code == 201
-    body = response.json()
-    assert body["role"] == "viewer"
-    assert body["is_active"] is True
-    assert "password" not in body
-    assert "hashed_password" not in body
-
-
-@pytest.mark.asyncio
-async def test_register_user_duplicate_email_returns_400(client):
-    payload = register_payload()
-    await client.post(REGISTER_URL, json=payload)
-
-    response = await client.post(REGISTER_URL, json=payload)
-
-    assert response.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_register_user_weak_password_returns_422(client):
-    response = await client.post(REGISTER_URL, json=register_payload(password="short"))
-
-    assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_register_user_first_name_too_long_returns_422(client):
-    response = await client.post(
-        REGISTER_URL, json=register_payload(first_name="x" * 101)
-    )
-
-    assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_register_user_ignores_role_override_in_payload(client):
-    """The `role` field was removed from UserCreate; self-registration always
-    yields a VIEWER regardless of what a client sends for it."""
-    response = await client.post(REGISTER_URL, json=register_payload(role="admin"))
-
-    assert response.status_code == 201
-    assert response.json()["role"] == "viewer"
-
-
-@pytest.mark.asyncio
 async def test_login_rate_limited_after_five_attempts(client, db_session):
     user = await create_user_with_password(db_session)
 
@@ -105,16 +45,6 @@ async def test_login_rate_limited_after_five_attempts(client, db_session):
     response = await client.post(
         LOGIN_URL, data={"username": user.email, "password": "wrong-password"}
     )
-    assert response.status_code == 429
-
-
-@pytest.mark.asyncio
-async def test_register_rate_limited_after_five_attempts(client):
-    for _ in range(5):
-        response = await client.post(REGISTER_URL, json=register_payload())
-        assert response.status_code == 201
-
-    response = await client.post(REGISTER_URL, json=register_payload())
     assert response.status_code == 429
 
 
