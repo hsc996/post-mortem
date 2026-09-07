@@ -175,8 +175,8 @@ async def resolve_incident(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Cannot resolve an incident with an active mitigation. "
-                "Clear the mitigation first via DELETE /incidents/{incident_id}/mitigation."
+                "Cannot resolve while a mitigation is still active. "
+                "Use Unwind Mitigation, then resolve again."
             ),
         )
 
